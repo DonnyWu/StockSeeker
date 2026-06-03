@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Secrets
+.env
+
+# Local data cache (per-ticker JSON + snapshot) — not committed
+data/cache/
+
+# HTTP cache produced by requests-cache
+*.sqlite
+http_cache*
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.swp

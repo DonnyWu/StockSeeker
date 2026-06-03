@@ -1,0 +1,63 @@
+ticker,name,sector,note
+ASTS,AST SpaceMobile,Communication Services,Direct-to-cell satellite broadband
+PL,Planet Labs,Industrials,Daily-imaging satellite data
+STEM,Stem Inc,Industrials,AI-driven energy storage
+IONQ,IonQ,Information Technology,Trapped-ion quantum computing
+RGTI,Rigetti Computing,Information Technology,Superconducting quantum computing
+RKLB,Rocket Lab,Industrials,Small-launch + space systems
+JOBY,Joby Aviation,Industrials,eVTOL air taxi
+ACHR,Archer Aviation,Industrials,eVTOL air taxi
+PLTR,Palantir,Information Technology,AI/data analytics platform
+SOFI,SoFi Technologies,Financials,Digital one-stop fintech bank
+UPST,Upstart,Financials,AI lending marketplace
+AFRM,Affirm,Financials,Buy-now-pay-later
+HOOD,Robinhood,Financials,Retail brokerage platform
+DKNG,DraftKings,Consumer Discretionary,Online sports betting
+RBLX,Roblox,Communication Services,UGC gaming platform
+U,Unity Software,Information Technology,Real-time 3D engine
+PATH,UiPath,Information Technology,Robotic process automation
+AI,C3.ai,Information Technology,Enterprise AI applications
+BBAI,BigBear.ai,Information Technology,AI decision intelligence
+SOUN,SoundHound AI,Information Technology,Conversational voice AI
+CRWD,CrowdStrike,Information Technology,Cloud security platform
+NET,Cloudflare,Information Technology,Edge network + security
+DDOG,Datadog,Information Technology,Observability platform
+SNOW,Snowflake,Information Technology,Cloud data platform
+MDB,MongoDB,Information Technology,Developer document database
+ZS,Zscaler,Information Technology,Zero-trust security
+S,SentinelOne,Information Technology,Autonomous endpoint security
+SMCI,Super Micro Computer,Information Technology,AI server hardware
+ASML,ASML Holding,Information Technology,EUV lithography (ADR)
+ARM,Arm Holdings,Information Technology,Chip IP licensing
+CRDO,Credo Technology,Information Technology,High-speed connectivity for AI
+ALAB,Astera Labs,Information Technology,AI connectivity silicon
+ENPH,Enphase Energy,Information Technology,Solar microinverters
+FSLR,First Solar,Information Technology,Thin-film solar manufacturing
+SHLS,Shoals Technologies,Industrials,Solar electrical balance-of-system
+PLUG,Plug Power,Industrials,Hydrogen fuel cells
+CHPT,ChargePoint,Industrials,EV charging network
+RIVN,Rivian,Consumer Discretionary,EV trucks/vans
+LCID,Lucid Group,Consumer Discretionary,Luxury EVs
+CELH,Celsius Holdings,Consumer Staples,Functional energy drinks
+DUOL,Duolingo,Consumer Discretionary,Gamified language learning
+TOST,Toast,Information Technology,Restaurant POS platform
+DOCN,DigitalOcean,Information Technology,Developer-focused cloud
+GTLB,GitLab,Information Technology,DevSecOps platform
+ESTC,Elastic,Information Technology,Search/observability
+FROG,JFrog,Information Technology,Software supply chain
+CFLT,Confluent,Information Technology,Data streaming (Kafka)
+HIMS,Hims & Hers Health,Health Care,Telehealth + pharmacy
+OSCR,Oscar Health,Health Care,Tech-driven health insurer
+DNA,Ginkgo Bioworks,Health Care,Synthetic biology platform
+CRSP,CRISPR Therapeutics,Health Care,Gene editing therapeutics
+NTLA,Intellia Therapeutics,Health Care,In-vivo CRISPR
+BEAM,Beam Therapeutics,Health Care,Base editing
+RXRX,Recursion Pharmaceuticals,Health Care,AI drug discovery
+TMDX,TransMedics,Health Care,Organ transplant systems
+TDOC,Teladoc Health,Health Care,Virtual care
+GLBE,Global-E Online,Information Technology,Cross-border e-commerce enablement
+BILL,BILL Holdings,Information Technology,SMB financial operations
+NU,Nu Holdings,Financials,Latin American digital bank
+MELI,MercadoLibre,Consumer Discretionary,LatAm e-commerce + fintech
+SE,Sea Limited,Communication Services,SE Asia gaming/e-commerce/fintech
+GRAB,Grab Holdings,Industrials,SE Asia super-app

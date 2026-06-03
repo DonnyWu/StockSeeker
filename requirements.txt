@@ -1,0 +1,18 @@
+# StockSeeker dependencies
+# Core UI + compute
+streamlit>=1.40
+pandas>=2.2
+numpy>=1.26
+
+# Primary free data source (uses curl_cffi sessions in 2026 to dodge rate-limiting)
+yfinance>=0.2.55
+
+# Light scraping + HTTP caching/throttling
+requests>=2.32
+beautifulsoup4>=4.12
+lxml>=5.2
+requests-cache>=1.2
+
+# Config + snapshot persistence (file caching, not a database)
+python-dotenv>=1.0
+pyarrow>=16.0
