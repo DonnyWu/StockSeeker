@@ -51,13 +51,18 @@ FACTOR_LABELS = {
 # Data loading (cached)
 # --------------------------------------------------------------------------- #
 @st.cache_data(show_spinner=False)
-def _load_snapshot_cached(_token: float):
-    """Load the snapshot. ``_token`` busts the cache after a refresh."""
+def _load_snapshot_cached(token: float):
+    """Load the snapshot. ``token`` busts the cache after a refresh.
+
+    NB: the parameter must *not* start with an underscore — Streamlit excludes
+    underscore-prefixed args from the cache key, which would make the bust a
+    no-op and freeze the snapshot for the whole session.
+    """
     return refresh.load_snapshot()
 
 
 @st.cache_data(show_spinner=False)
-def _enrich_cached(ticker: str, _token: float):
+def _enrich_cached(ticker: str, token: float):
     return scrape.enrich(ticker)
 
 
@@ -145,8 +150,23 @@ def _run_refresh(universe_choice: str):
         )
         refresh.save_snapshot(df)
     bar.empty()
-    st.session_state["snapshot_token"] = time.time()  # bust caches
-    st.sidebar.success(f"Refreshed {len(df)} tickers.")
+    # Bust the snapshot cache so the rerun re-reads the file we just wrote.
+    _load_snapshot_cached.clear()
+    st.session_state["snapshot_token"] = time.time()
+
+    stats = df.attrs.get("fetch_stats", {})
+    fresh, stale = stats.get("fresh", 0), stats.get("stale", 0)
+    if fresh == 0 and stale:
+        st.sidebar.warning(
+            f"Refreshed {len(df)} tickers, but all came from cache — the data "
+            "source may be rate-limiting. Numbers are unchanged; try again shortly."
+        )
+    elif stale:
+        st.sidebar.success(
+            f"Refreshed {len(df)} tickers ({fresh} fresh, {stale} from cache)."
+        )
+    else:
+        st.sidebar.success(f"Refreshed {len(df)} tickers (all fresh).")
     st.rerun()
 
 
