@@ -46,6 +46,7 @@ def compute_snapshot(
     if limit:
         tickers = tickers[:limit]
 
+    run_start = time.time()
     raw_by_ticker = fetch.get_many(tickers, force=force, progress=progress)
 
     # Carry the universe's name/sector/source through, preferring live metrics.
@@ -64,7 +65,20 @@ def compute_snapshot(
             m["source"] = uni_idx.loc[t, "source"]
         rows.append(m)
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+
+    # Record how many tickers came from a *fresh* live pull vs. fell back to
+    # stale on-disk cache. A live fetch stamps ``fetched_at`` during this run, so
+    # anything older than ``run_start`` was served from cache (a silent symptom of
+    # rate-limiting). The UI surfaces this so a no-op refresh doesn't look healthy.
+    fresh = sum(1 for p in raw_by_ticker.values()
+                if p.get("fetched_at", 0) >= run_start)
+    df.attrs["fetch_stats"] = {
+        "fresh": fresh,
+        "stale": len(raw_by_ticker) - fresh,
+        "total": len(raw_by_ticker),
+    }
+    return df
 
 
 def save_snapshot(df: pd.DataFrame) -> dict:
