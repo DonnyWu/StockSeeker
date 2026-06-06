@@ -109,6 +109,18 @@ GATE_COMPOUNDER = {
     "require_profitable": True,
 }
 
+# "Sharp Drops" is deliberately permissive: we *want* to surface beaten-down
+# names (even unprofitable ones) and flag their risks rather than gate them out.
+# A name only needs basic liquidity/size AND to actually be dipping/oversold.
+GATE_DIP = {
+    "market_cap_min": 300e6,          # skip true microcaps
+    "price_min": 3.0,
+    "min_avg_dollar_volume": 1e6,     # must be tradable
+    "shock_sigma": -2.0,              # a >=2-sigma down day, OR
+    "short_drop": -0.10,             # >=10% over ~1-2 weeks, OR
+    "oversold_rsi": 35.0,            # RSI <= 35 (oversold)
+}
+
 
 # --------------------------------------------------------------------------- #
 # Factor weights (must sum to ~1.0 within each category)
@@ -143,10 +155,19 @@ WEIGHTS_COMPOUNDER = {
     "analyst_consensus": 0.05,
 }
 
+WEIGHTS_DIP = {
+    "shock": 0.30,             # size of the recent sigma down-move
+    "short_drawdown": 0.25,    # 1-2 week decline
+    "oversold_rsi": 0.20,      # low RSI
+    "below_trend": 0.15,       # distance below the 200d MA (capped)
+    "analyst_upside": 0.10,    # tilt toward overreactions vs. broken theses
+}
+
 DEFAULT_WEIGHTS = {
     "growth": WEIGHTS_GROWTH,
     "value": WEIGHTS_VALUE,
     "compounder": WEIGHTS_COMPOUNDER,
+    "dip": WEIGHTS_DIP,
 }
 
 
@@ -158,11 +179,16 @@ RSI_HALVE_REWARD_AT = 70     # momentum reward starts tapering here
 DRAWDOWN_BROKEN_THESIS = 0.60  # value: drops beyond this are penalized, not rewarded
 MIN_ELIGIBLE_FOR_PERCENTILE = 5  # below this, fall back to absolute thresholds
 
-CATEGORIES = ("growth", "value", "compounder")
+DIP_DEEP_DROP = 0.60         # dip: below-trend distance is capped here so a total collapse doesn't dominate
+MOVERS_SIGMA = -2.0          # "Big movers" strip: surface drops at/below this many sigmas
+MOVERS_TOP_N = 8             # how many movers to show in the top-of-page strip
+
+CATEGORIES = ("growth", "value", "compounder", "dip")
 CATEGORY_LABELS = {
     "growth": "🚀 High Growth",
     "value": "💎 Value / On Sale",
     "compounder": "🛡️ Steady Compounders",
+    "dip": "🩸 Sharp Drops",
 }
 
 DISCLAIMER = (

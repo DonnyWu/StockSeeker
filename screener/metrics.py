@@ -188,6 +188,30 @@ def compute_metrics(payload: dict) -> dict:
     m["ma200"] = ma200
     m["golden_cross"] = bool(ma50 and ma200 and ma50 > ma200)
 
+    # --- recent drop / "dip" signals ---
+    # Latest single-day move and short-window declines (fractions; -0.10 == -10%).
+    m["ret_1d"] = _pct_change(closes, 1)
+    m["ret_1w"] = _pct_change(closes, 5)    # ~1 trading week
+    m["ret_2w"] = _pct_change(closes, 10)   # ~2 trading weeks
+    # Daily-return volatility and how many sigmas the latest move was. A big
+    # negative drop_sigma flags an unusual one-day shock relative to the stock's
+    # own noise (e.g. an earnings/guidance reaction), as opposed to routine wiggle.
+    clean = [c for c in closes if c is not None]
+    if len(clean) >= 21:
+        arr = np.asarray(clean, dtype=float)
+        rets = arr[1:] / arr[:-1] - 1.0
+        vol = float(np.std(rets[-252:]))
+        m["daily_vol"] = vol if vol > 0 else None
+        m["drop_sigma"] = (
+            m["ret_1d"] / vol if (m["ret_1d"] is not None and vol > 0) else None
+        )
+    else:
+        m["daily_vol"] = None
+        m["drop_sigma"] = None
+    # Distance below the moving-average trend (negative == price below the average).
+    m["pct_vs_ma50"] = (price / ma50 - 1.0) if (price and ma50) else None
+    m["pct_vs_ma200"] = (price / ma200 - 1.0) if (price and ma200) else None
+
     # --- analyst ---
     target = _num(info.get("targetMeanPrice"))
     m["target_mean"] = target
