@@ -44,6 +44,10 @@ FACTOR_LABELS = {
     "f_dividend_quality": "Dividend quality",
     "f_low_volatility": "Low volatility",
     "f_analyst_consensus": "Analyst consensus",
+    "f_shock": "Shock (σ down-day)",
+    "f_short_drawdown": "1–2 week decline",
+    "f_oversold_rsi": "Oversold (RSI)",
+    "f_below_trend": "Below 200d trend",
 }
 
 
@@ -201,6 +205,43 @@ def _fmt_pct(v):
     return "—" if v is None or pd.isna(v) else f"{v * 100:+.0f}%"
 
 
+def render_movers(df: pd.DataFrame):
+    """Top-of-page strip surfacing the biggest unusual recent drops, universe-wide.
+
+    Independent of the category buckets — its job is simply to make a fresh,
+    outsized drop impossible to miss the moment you open the app.
+    """
+    sigma = pd.to_numeric(df.get("drop_sigma"), errors="coerce")
+    movers = df.assign(_sigma=sigma)
+    movers = movers[movers["_sigma"] <= config.MOVERS_SIGMA]
+    if movers.empty:
+        return
+    movers = movers.nsmallest(config.MOVERS_TOP_N, "_sigma")
+
+    with st.container(border=True):
+        st.markdown("#### 🩸 Big movers — unusual recent drops")
+        st.caption(
+            f"Names that fell at least {abs(config.MOVERS_SIGMA):.0f}σ in their "
+            "latest session, across the whole universe. See the **🩸 Sharp Drops** "
+            "tab to rank and inspect them."
+        )
+        cols = st.columns(min(len(movers), 4))
+        for i, (_, r) in enumerate(movers.iterrows()):
+            col = cols[i % len(cols)]
+            price, r1d, sig = r.get("price"), r.get("ret_1d"), r.get("_sigma")
+            delta = None
+            if pd.notna(r1d):
+                delta = f"{r1d * 100:+.1f}%"
+                if pd.notna(sig):
+                    delta += f"  ({sig:+.1f}σ)"
+            col.metric(
+                label=str(r.get("ticker", "—")),
+                value=f"${price:,.2f}" if pd.notna(price) else "—",
+                delta=delta,
+                help=str(r.get("name", "")),
+            )
+
+
 def render_table(ranked: pd.DataFrame, category: str):
     if ranked.empty:
         st.info("No stocks cleared this category's eligibility gate with the "
@@ -325,6 +366,7 @@ def main():
         return
 
     filtered = _apply_filters(df, controls)
+    render_movers(filtered)
     results = scoring.screen(refresh.metrics_records(filtered), controls["weights"])
 
     tabs = st.tabs([config.CATEGORY_LABELS[c] for c in config.CATEGORIES])
@@ -336,6 +378,9 @@ def main():
                  "to their own recent range, with a value-trap guard.",
         "compounder": "Large, profitable, lower-beta names for buy-and-hold / "
                       "dollar-cost-averaging.",
+        "dip": "Names that just dropped hard or look oversold (shock + oversold "
+               "blend), shown *with their risk flags* so you can judge an "
+               "overreaction from a broken thesis. Not gated on profitability.",
     }
     for tab, cat in zip(tabs, config.CATEGORIES):
         with tab:

@@ -131,6 +131,36 @@ def _dividend_quality(df: pd.DataFrame) -> pd.Series:
     return base
 
 
+def _shock_subscore(df: pd.DataFrame) -> pd.Series:
+    """Size of the latest one-day shock: a bigger sigma drop scores higher."""
+    sigma = pd.to_numeric(df["drop_sigma"], errors="coerce")
+    # Negate so a large *negative* sigma (a sharp drop) ranks at the top.
+    return _pct(-sigma, "high")
+
+
+def _short_drawdown_subscore(df: pd.DataFrame) -> pd.Series:
+    """Recent 1-2 week decline: a deeper short-window drop scores higher."""
+    short = pd.concat(
+        [pd.to_numeric(df["ret_1w"], errors="coerce"),
+         pd.to_numeric(df["ret_2w"], errors="coerce")],
+        axis=1,
+    ).mean(axis=1)
+    return _pct(-short, "high")
+
+
+def _below_trend_subscore(df: pd.DataFrame) -> pd.Series:
+    """Distance below the 200d MA, rewarded up to a point then folded back.
+
+    Being below trend is the oversold signal we want; but a name that has fallen
+    *far* below its 200d (a collapse, not a dip) is more often broken than cheap,
+    so beyond ``DIP_DEEP_DROP`` the reward is folded back like the value drawdown.
+    """
+    below = -pd.to_numeric(df["pct_vs_ma200"], errors="coerce")  # positive == below
+    cap = config.DIP_DEEP_DROP
+    adjusted = below.where(below <= cap, cap - (below - cap))
+    return _pct(adjusted, "high")
+
+
 # --------------------------------------------------------------------------- #
 # Factor specs per category
 # Each entry: factor_key -> (callable(df) -> raw Series, direction)
@@ -160,6 +190,13 @@ def _factor_specs():
             "dividend_quality": (_dividend_quality, "score"),
             "low_volatility": (lambda d: d["beta"], "low"),
             "analyst_consensus": (lambda d: d["recommendation_mean"], "low"),
+        },
+        "dip": {
+            "shock": (_shock_subscore, "score"),
+            "short_drawdown": (_short_drawdown_subscore, "score"),
+            "oversold_rsi": (lambda d: d["rsi"], "low"),
+            "below_trend": (_below_trend_subscore, "score"),
+            "analyst_upside": (lambda d: d["analyst_upside"], "high"),
         },
     }
 
@@ -215,10 +252,36 @@ def _eligible_compounder(df: pd.DataFrame) -> pd.Series:
     return cond.fillna(False)
 
 
+def _eligible_dip(df: pd.DataFrame) -> pd.Series:
+    g = config.GATE_DIP
+    mc = pd.to_numeric(df["market_cap"], errors="coerce")
+    price = pd.to_numeric(df["price"], errors="coerce")
+    adv = pd.to_numeric(df["avg_dollar_volume"], errors="coerce")
+    sigma = pd.to_numeric(df["drop_sigma"], errors="coerce")
+    r1w = pd.to_numeric(df["ret_1w"], errors="coerce")
+    r2w = pd.to_numeric(df["ret_2w"], errors="coerce")
+    rsi = pd.to_numeric(df["rsi"], errors="coerce")
+    base = (
+        (mc >= g["market_cap_min"])
+        & (price >= g["price_min"])
+        & (adv >= g["min_avg_dollar_volume"])
+    )
+    # Deliberately permissive on quality (risks are surfaced, not gated), but the
+    # name must actually be dipping/oversold on at least one signal to belong here.
+    dipping = (
+        (sigma <= g["shock_sigma"])
+        | (r1w <= g["short_drop"])
+        | (r2w <= g["short_drop"])
+        | (rsi <= g["oversold_rsi"])
+    )
+    return (base & dipping).fillna(False)
+
+
 _GATES = {
     "growth": _eligible_growth,
     "value": _eligible_value,
     "compounder": _eligible_compounder,
+    "dip": _eligible_dip,
 }
 
 
@@ -271,7 +334,7 @@ def _reasons(category: str, row: pd.Series) -> list[str]:
         if g("free_cash_flow") is not None and g("free_cash_flow") > 0:
             chips.append("Positive FCF")
 
-    else:  # compounder
+    elif category == "compounder":
         if g("roe") is not None and g("roe") > 0.10:
             chips.append(f"ROE {g('roe') * 100:.0f}%")
         if g("profit_margin") is not None and g("profit_margin") > 0:
@@ -285,17 +348,52 @@ def _reasons(category: str, row: pd.Series) -> list[str]:
         if g("debt_to_equity") is not None and g("debt_to_equity") < 1.0:
             chips.append(f"Low debt (D/E {g('debt_to_equity'):.1f})")
 
-    return [c for c in chips if c][:5]
+    else:  # dip
+        if pd.notna(g("ret_1d")):
+            chips.append(f"{g('ret_1d') * 100:+.0f}% last day")
+        if pd.notna(g("drop_sigma")):
+            chips.append(f"{g('drop_sigma'):+.1f}σ move")
+        if pd.notna(g("ret_1w")):
+            chips.append(f"{g('ret_1w') * 100:+.0f}% 1wk")
+        if pd.notna(g("rsi")) and g("rsi") <= 40:
+            chips.append(f"RSI {g('rsi'):.0f} (oversold)")
+        if pd.notna(g("pct_vs_ma200")) and g("pct_vs_ma200") < 0:
+            chips.append(f"{abs(g('pct_vs_ma200')) * 100:.0f}% below 200d MA")
+        if pd.notna(g("analyst_upside")) and g("analyst_upside") > 0.05:
+            chips.append(f"Analyst upside {g('analyst_upside') * 100:+.0f}%")
+        # Risk flags — the whole point of this bucket is to show, not hide, danger.
+        prof = g("profitable")
+        if prof is not None and not bool(prof):
+            chips.append("⚠ Unprofitable")
+        if pd.notna(g("debt_to_equity")) and g("debt_to_equity") > 2.0:
+            chips.append(f"⚠ High debt (D/E {g('debt_to_equity'):.1f})")
+        if pd.notna(g("off_high")) and g("off_high") > config.DRAWDOWN_BROKEN_THESIS:
+            chips.append("⚠ 60%+ off high")
+
+    cap = 8 if category == "dip" else 5
+    return [c for c in chips if c][:cap]
 
 
 # --------------------------------------------------------------------------- #
 # Public API
 # --------------------------------------------------------------------------- #
+# Metric columns the scoring engine references that may be absent from an older
+# on-disk snapshot (the "dip" signals were added later). Backfill them as NaN so
+# the app keeps working — the dip bucket just stays empty until the next rebuild.
+_EXPECTED_METRIC_COLS = (
+    "ret_1d", "ret_1w", "ret_2w", "daily_vol", "drop_sigma",
+    "pct_vs_ma50", "pct_vs_ma200",
+)
+
+
 def metrics_to_frame(metrics_list: list[dict]) -> pd.DataFrame:
     """Build a DataFrame from a list of per-ticker metric dicts."""
     df = pd.DataFrame([m for m in metrics_list if m])
     if not df.empty:
         df = df.drop_duplicates("ticker").set_index("ticker", drop=False)
+    for col in _EXPECTED_METRIC_COLS:
+        if col not in df.columns:
+            df[col] = np.nan
     return df
 
 
