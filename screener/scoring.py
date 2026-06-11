@@ -161,6 +161,23 @@ def _below_trend_subscore(df: pd.DataFrame) -> pd.Series:
     return _pct(adjusted, "high")
 
 
+def _room_to_grow_subscore(df: pd.DataFrame) -> pd.Series:
+    """Moonshot: smaller companies have more room to multiply, so rank smaller
+    market caps higher (an inverted percentile within the eligible set)."""
+    return _pct(df["market_cap"], "low")
+
+
+def _analyst_conviction_subscore(df: pd.DataFrame) -> pd.Series:
+    """Moonshot: reward upside that is *corroborated by coverage breadth*.
+
+    A blend of the analyst-upside rank and the analyst-count rank, so a high
+    target backed by many analysts beats the same target from a lone optimist.
+    """
+    upside = _pct(df["analyst_upside"], "high")
+    coverage = _pct(df["num_analysts"], "high")
+    return 0.6 * upside + 0.4 * coverage
+
+
 # --------------------------------------------------------------------------- #
 # Factor specs per category
 # Each entry: factor_key -> (callable(df) -> raw Series, direction)
@@ -197,6 +214,14 @@ def _factor_specs():
             "oversold_rsi": (lambda d: d["rsi"], "low"),
             "below_trend": (_below_trend_subscore, "score"),
             "analyst_upside": (lambda d: d["analyst_upside"], "high"),
+        },
+        "moonshot": {
+            "analyst_upside": (lambda d: d["analyst_upside"], "high"),
+            "revenue_growth": (lambda d: d["revenue_growth"], "high"),
+            "revenue_cagr": (lambda d: d["revenue_cagr"], "high"),
+            "room_to_grow": (_room_to_grow_subscore, "score"),
+            "relative_strength": (_momentum_with_rsi_damping, "score"),
+            "analyst_conviction": (_analyst_conviction_subscore, "score"),
         },
     }
 
@@ -277,11 +302,35 @@ def _eligible_dip(df: pd.DataFrame) -> pd.Series:
     return (base & dipping).fillna(False)
 
 
+def _eligible_moonshot(df: pd.DataFrame) -> pd.Series:
+    g = config.GATE_MOONSHOT
+    mc = pd.to_numeric(df["market_cap"], errors="coerce")
+    price = pd.to_numeric(df["price"], errors="coerce")
+    adv = pd.to_numeric(df["avg_dollar_volume"], errors="coerce")
+    upside = pd.to_numeric(df["analyst_upside"], errors="coerce")
+    n_analysts = pd.to_numeric(df["num_analysts"], errors="coerce")
+    rg = pd.to_numeric(df["revenue_growth"], errors="coerce")
+    # Small/cheap and tradable. Price is the literal "low share price" filter.
+    base = (
+        (mc >= g["market_cap_min"]) & (mc <= g["market_cap_max"])
+        & (price <= g["price_max"])
+        & (adv >= g["min_avg_dollar_volume"])
+    )
+    # "High potential" — must clear at least one real signal. Analyst upside only
+    # counts when enough analysts cover it (so one optimist can't game the bucket).
+    potential = (
+        ((upside >= g["upside_min"]) & (n_analysts >= g["min_analysts"]))
+        | (rg >= g["revenue_growth_min"])
+    )
+    return (base & potential).fillna(False)
+
+
 _GATES = {
     "growth": _eligible_growth,
     "value": _eligible_value,
     "compounder": _eligible_compounder,
     "dip": _eligible_dip,
+    "moonshot": _eligible_moonshot,
 }
 
 
@@ -300,6 +349,15 @@ def _value_trap_multiplier(df: pd.DataFrame) -> pd.Series:
 # --------------------------------------------------------------------------- #
 # Reason chips
 # --------------------------------------------------------------------------- #
+def _fmt_cap(v: float) -> str:
+    """Compact market-cap string for reason chips ($4.2B / $780M)."""
+    if v >= 1e12:
+        return f"${v / 1e12:.1f}T"
+    if v >= 1e9:
+        return f"${v / 1e9:.1f}B"
+    return f"${v / 1e6:.0f}M"
+
+
 def _reasons(category: str, row: pd.Series) -> list[str]:
     chips: list[Optional[str]] = []
     g = lambda k: row.get(k)
@@ -348,7 +406,7 @@ def _reasons(category: str, row: pd.Series) -> list[str]:
         if g("debt_to_equity") is not None and g("debt_to_equity") < 1.0:
             chips.append(f"Low debt (D/E {g('debt_to_equity'):.1f})")
 
-    else:  # dip
+    elif category == "dip":
         if pd.notna(g("ret_1d")):
             chips.append(f"{g('ret_1d') * 100:+.0f}% last day")
         if pd.notna(g("drop_sigma")):
@@ -370,7 +428,27 @@ def _reasons(category: str, row: pd.Series) -> list[str]:
         if pd.notna(g("off_high")) and g("off_high") > config.DRAWDOWN_BROKEN_THESIS:
             chips.append("⚠ 60%+ off high")
 
-    cap = 8 if category == "dip" else 5
+    else:  # moonshot
+        if pd.notna(g("analyst_upside")) and g("analyst_upside") > 0.05:
+            n = g("num_analysts")
+            tag = f" ({n:.0f} analysts)" if pd.notna(n) else ""
+            chips.append(f"Analyst upside {g('analyst_upside') * 100:+.0f}%{tag}")
+        if pd.notna(g("revenue_growth")):
+            chips.append(f"Rev {g('revenue_growth') * 100:+.0f}% YoY")
+        if pd.notna(g("revenue_cagr")):
+            chips.append(f"3y CAGR {g('revenue_cagr') * 100:+.0f}%")
+        if pd.notna(g("price")):
+            chips.append(f"${g('price'):,.2f} share")
+        if pd.notna(g("market_cap")):
+            chips.append(f"Mkt cap {_fmt_cap(g('market_cap'))}")
+        # Risk flags — speculative names; show the danger rather than hide it.
+        prof = g("profitable")
+        if prof is not None and not bool(prof):
+            chips.append("⚠ Unprofitable")
+        if pd.notna(g("debt_to_equity")) and g("debt_to_equity") > 2.0:
+            chips.append(f"⚠ High debt (D/E {g('debt_to_equity'):.1f})")
+
+    cap = 8 if category == "dip" else 6 if category == "moonshot" else 5
     return [c for c in chips if c][:cap]
 
 

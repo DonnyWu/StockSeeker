@@ -121,6 +121,24 @@ GATE_DIP = {
     "oversold_rsi": 35.0,            # RSI <= 35 (oversold)
 }
 
+# "Moonshots" hunts the Archer (ACHR) profile: low-priced, small/mid-cap,
+# speculative names with big upside. Like the dip bucket it is deliberately
+# permissive on quality (unprofitable allowed — risks are surfaced, not gated),
+# but a name must show *real* potential on at least one signal, and the share
+# price + company size must actually be "small/cheap". Note the price gate is
+# the literal "low share price" filter the user asked for; absolute price is
+# financially arbitrary, so it is a *gate* only — never a scored factor.
+GATE_MOONSHOT = {
+    "market_cap_min": 300e6,          # skip true microcaps
+    "market_cap_max": 20e9,           # small/mid only — room to multiply
+    "price_max": 30.0,                # the "low share price" filter (tunable)
+    "min_avg_dollar_volume": 1e6,     # must be tradable
+    # "high potential" — must clear at least ONE of these:
+    "upside_min": 0.30,               # analyst upside >= +30% ...
+    "min_analysts": 4,                # ... but only if >= 4 analysts cover it
+    "revenue_growth_min": 0.20,       # OR revenue growing >= 20% YoY
+}
+
 
 # --------------------------------------------------------------------------- #
 # Factor weights (must sum to ~1.0 within each category)
@@ -163,11 +181,21 @@ WEIGHTS_DIP = {
     "analyst_upside": 0.10,    # tilt toward overreactions vs. broken theses
 }
 
+WEIGHTS_MOONSHOT = {
+    "analyst_upside": 0.30,     # near-term "underpriced" signal
+    "revenue_growth": 0.20,     # the growth engine
+    "revenue_cagr": 0.10,       # durable multi-year growth
+    "room_to_grow": 0.15,       # smaller cap = more room to multiply
+    "relative_strength": 0.15,  # some positive momentum (alive, not a falling knife)
+    "analyst_conviction": 0.10, # upside corroborated by coverage breadth
+}
+
 DEFAULT_WEIGHTS = {
     "growth": WEIGHTS_GROWTH,
     "value": WEIGHTS_VALUE,
     "compounder": WEIGHTS_COMPOUNDER,
     "dip": WEIGHTS_DIP,
+    "moonshot": WEIGHTS_MOONSHOT,
 }
 
 
@@ -183,12 +211,13 @@ DIP_DEEP_DROP = 0.60         # dip: below-trend distance is capped here so a tot
 MOVERS_SIGMA = -2.0          # "Big movers" strip: surface drops at/below this many sigmas
 MOVERS_TOP_N = 8             # how many movers to show in the top-of-page strip
 
-CATEGORIES = ("growth", "value", "compounder", "dip")
+CATEGORIES = ("growth", "value", "compounder", "dip", "moonshot")
 CATEGORY_LABELS = {
     "growth": "🚀 High Growth",
     "value": "💎 Value / On Sale",
     "compounder": "🛡️ Steady Compounders",
     "dip": "🩸 Sharp Drops",
+    "moonshot": "🌙 Moonshots",
 }
 
 DISCLAIMER = (
