@@ -13,6 +13,7 @@ Sources:
   * Finviz quote page  - free, no key (analyst recommendation + price target).
   * Finnhub            - free key, recommendation trend (buy/hold/sell counts).
   * FMP                - free key, piotroski/altman-style financial score.
+  * Yahoo news + VADER - free, no key (recent-headline sentiment tone).
 """
 
 from __future__ import annotations
@@ -143,6 +144,73 @@ def get_fmp_score(ticker: str) -> Optional[dict]:
         return None
 
 
+# --------------------------------------------------------------------------- #
+# Yahoo news headlines + VADER sentiment (no key)
+# --------------------------------------------------------------------------- #
+def get_news_sentiment(ticker: str, max_items: int = 8) -> Optional[dict]:
+    """Headline-tone read from recent Yahoo Finance news (free, no key).
+
+    Pulls recent headlines via yfinance and scores each title with VADER's
+    compound polarity (-1..+1), then averages. Returns a compact summary::
+
+        {"label": "Bullish|Neutral|Bearish", "score": <-1..1>, "n": <int>,
+         "headlines": [{"title", "publisher", "link", "compound"}, ...]}
+
+    or ``None`` if there are no headlines. Never raises.
+    """
+    try:
+        import yfinance as yf
+
+        raw = yf.Ticker(ticker).news or []
+    except Exception:
+        return None
+    if not raw:
+        return None
+
+    items = []
+    for it in raw[:max_items]:
+        if not isinstance(it, dict):
+            continue
+        # yfinance has shipped two shapes: a flat dict, and a nested
+        # {"content": {...}} form. Support both so we don't break on upgrade.
+        content = it.get("content")
+        if isinstance(content, dict):
+            title = content.get("title")
+            publisher = (content.get("provider") or {}).get("displayName")
+            url = ((content.get("canonicalUrl") or {}).get("url")
+                   or (content.get("clickThroughUrl") or {}).get("url"))
+        else:
+            title = it.get("title")
+            publisher = it.get("publisher")
+            url = it.get("link")
+        if title:
+            items.append({"title": title, "publisher": publisher, "link": url})
+    if not items:
+        return None
+
+    try:
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+        analyzer = SentimentIntensityAnalyzer()
+    except Exception:
+        analyzer = None
+
+    if analyzer is not None:
+        for it in items:
+            it["compound"] = analyzer.polarity_scores(it["title"]).get("compound", 0.0)
+        score = sum(it["compound"] for it in items) / len(items)
+        if score >= 0.15:
+            label = "Bullish"
+        elif score <= -0.15:
+            label = "Bearish"
+        else:
+            label = "Neutral"
+    else:
+        score, label = None, "Unscored"
+
+    return {"label": label, "score": score, "n": len(items), "headlines": items}
+
+
 def enrich(ticker: str) -> dict:
     """Best-effort merge of all enrichment sources for one ticker.
 
@@ -153,6 +221,7 @@ def enrich(ticker: str) -> dict:
         "finviz": get_finviz_snapshot(ticker),
         "finnhub": get_finnhub_recommendation(ticker),
         "fmp": get_fmp_score(ticker),
+        "news_sentiment": get_news_sentiment(ticker),
     }
 
 

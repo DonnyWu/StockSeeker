@@ -13,6 +13,9 @@ beautifulsoup4>=4.12
 lxml>=5.2
 requests-cache>=1.2
 
+# News-headline sentiment (offline lexicon scorer, no API key)
+vaderSentiment>=3.3
+
 # Config + snapshot persistence (file caching, not a database)
 python-dotenv>=1.0
 pyarrow>=16.0

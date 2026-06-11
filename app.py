@@ -48,6 +48,8 @@ FACTOR_LABELS = {
     "f_short_drawdown": "1–2 week decline",
     "f_oversold_rsi": "Oversold (RSI)",
     "f_below_trend": "Below 200d trend",
+    "f_room_to_grow": "Room to grow (small cap)",
+    "f_analyst_conviction": "Analyst conviction",
 }
 
 
@@ -327,9 +329,26 @@ def render_detail(row: pd.Series, category: str):
     c4.metric("Analyst rating", f"{rec:.2f}/5" if pd.notna(rec) else "—",
               help="1 = strong buy … 5 = sell")
 
-    # --- live analyst sentiment (optional, cached) ---
-    with st.expander("📰 Live analyst sentiment (Finviz / Finnhub / FMP)"):
+    # --- live analyst + news sentiment (optional, cached) ---
+    with st.expander("📰 Live sentiment — news tone + analysts "
+                     "(Yahoo / Finviz / Finnhub / FMP)"):
         enr = _enrich_cached(ticker, _snapshot_token())
+        news = enr.get("news_sentiment")
+        if news:
+            _emoji = {"Bullish": "🟢", "Bearish": "🔴",
+                      "Neutral": "⚪", "Unscored": "⚪"}.get(news["label"], "⚪")
+            score = news.get("score")
+            tone = (f"{_emoji} **Recent news tone: {news['label']}** "
+                    f"({score:+.2f}) " if score is not None
+                    else f"{_emoji} **Recent news tone: {news['label']}** ")
+            st.markdown(tone + f"· {news['n']} headlines")
+            for h in news["headlines"]:
+                title, link = h.get("title"), h.get("link")
+                pub = h.get("publisher") or ""
+                bullet = f"[{title}]({link})" if link else title
+                if pub:
+                    bullet += f"  — *{pub}*"
+                st.markdown(f"- {bullet}")
         if enr.get("finviz"):
             st.write("**Finviz:**", enr["finviz"])
         if enr.get("finnhub"):
@@ -381,6 +400,10 @@ def main():
         "dip": "Names that just dropped hard or look oversold (shock + oversold "
                "blend), shown *with their risk flags* so you can judge an "
                "overreaction from a broken thesis. Not gated on profitability.",
+        "moonshot": "Low-priced (≤ $30/share), small/mid-cap speculative names "
+                    "with big analyst upside and/or fast growth — the "
+                    "lottery-ticket profile (think ACHR/JOBY), ranked by upside + "
+                    "growth and shown *with risk flags*. Not gated on profitability.",
     }
     for tab, cat in zip(tabs, config.CATEGORIES):
         with tab:
