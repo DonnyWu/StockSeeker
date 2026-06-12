@@ -18,7 +18,8 @@ import streamlit as st
 
 import config
 import refresh
-from screener import fetch, scoring, scrape
+from screener import fetch, history, scoring, scrape
+from screener import metrics as metrics_mod
 
 st.set_page_config(page_title="StockSeeker", page_icon="📈", layout="wide")
 
@@ -33,9 +34,9 @@ FACTOR_LABELS = {
     "f_value_vs_growth": "Value vs growth",
     "f_analyst_upside": "Analyst upside",
     "f_relative_strength": "Relative strength",
-    "f_revisions_insider": "Earnings momentum",
+    "f_earnings_momentum": "Earnings momentum",
     "f_drawdown": "Discount from high",
-    "f_valuation_vs_history": "Cheap vs own range",
+    "f_valuation_vs_history": "Cheap on multiples",
     "f_quality": "Quality",
     "f_fundamental_stability": "Fundamental stability",
     "f_quality_consistency": "Quality & consistency",
@@ -48,6 +49,7 @@ FACTOR_LABELS = {
     "f_short_drawdown": "1–2 week decline",
     "f_oversold_rsi": "Oversold (RSI)",
     "f_below_trend": "Below 200d trend",
+    "f_fundamental_health": "Fundamental health",
     "f_room_to_grow": "Room to grow (small cap)",
     "f_analyst_conviction": "Analyst conviction",
 }
@@ -79,7 +81,7 @@ def _snapshot_token() -> float:
 # --------------------------------------------------------------------------- #
 # Sidebar
 # --------------------------------------------------------------------------- #
-def sidebar(meta) -> dict:
+def sidebar(meta, sector_options: list[str]) -> dict:
     st.sidebar.title("📈 StockSeeker")
 
     if meta and meta.get("built_at_iso"):
@@ -114,6 +116,9 @@ def sidebar(meta) -> dict:
         default=["sp500", "growth", "both"],
         help="Where a ticker came from in the universe.",
     )
+    sector_filter = st.sidebar.multiselect(
+        "Sectors", sector_options, default=sector_options,
+    ) if sector_options else []
 
     # Advanced weight sliders.
     weights = {}
@@ -134,6 +139,8 @@ def sidebar(meta) -> dict:
         "mc_min": mc_min * 1e9,
         "mc_max": mc_max * 1e9,
         "sources": source_filter,
+        "sectors": sector_filter,
+        "sector_options": sector_options,
         "weights": weights,
     }
 
@@ -155,6 +162,7 @@ def _run_refresh(universe_choice: str):
             progress=_progress,
         )
         refresh.save_snapshot(df)
+        refresh.record_default_picks(df)
     bar.empty()
     # Bust the snapshot cache so the rerun re-reads the file we just wrote.
     _load_snapshot_cached.clear()
@@ -185,6 +193,11 @@ def _apply_filters(df: pd.DataFrame, controls: dict) -> pd.DataFrame:
     out = out[(mc.fillna(0) >= controls["mc_min"]) & (mc.fillna(0) <= controls["mc_max"])]
     if "source" in out.columns and controls["sources"]:
         out = out[out["source"].isin(controls["sources"])]
+    # Only filter on sector when the user actually deselected something, so
+    # names with an unknown sector aren't dropped by the all-selected default.
+    if ("sector" in out.columns and controls.get("sectors")
+            and set(controls["sectors"]) != set(controls.get("sector_options", []))):
+        out = out[out["sector"].astype(str).isin(controls["sectors"])]
     return out
 
 
@@ -271,6 +284,20 @@ def render_table(ranked: pd.DataFrame, category: str):
                 "Score", min_value=0, max_value=100, format="%.0f"),
             "Why": st.column_config.TextColumn("Why it surfaced", width="large"),
         },
+    )
+
+    export_cols = [c for c in ("ticker", "name", "sector", "score", "price",
+                               "market_cap", "analyst_upside")
+                   if c in ranked.columns]
+    export_cols += [c for c in ranked.columns if c.startswith("f_")]
+    export = ranked[export_cols].copy()
+    export["reasons"] = [" | ".join(r) for r in ranked["reasons"]]
+    st.download_button(
+        "⬇️ Download this table (CSV)",
+        export.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"stockseeker_{category}.csv",
+        mime="text/csv",
+        key=f"dl_{category}",
     )
 
     # Detail view selector.
@@ -369,11 +396,145 @@ def render_detail(row: pd.Series, category: str):
 
 
 # --------------------------------------------------------------------------- #
+# Performance (pick history)
+# --------------------------------------------------------------------------- #
+def render_performance(snapshot: pd.DataFrame):
+    """How past top-10 picks have done since the day they surfaced."""
+    hist = history.load_history()
+    if hist.empty:
+        st.info("No pick history yet. The top 10 per category are logged "
+                "automatically (with the default weights) every time a snapshot "
+                "is built — refresh data to start the track record.")
+        return
+
+    perf = history.performance_frame(hist, snapshot)
+    st.caption(
+        "Top-10 picks per category, logged at every snapshot build with the "
+        "default weights. Returns compare the price at pick time to the latest "
+        "snapshot price — refresh data to bring them up to date."
+    )
+
+    valid = perf.dropna(subset=["return_pct"])
+    if not valid.empty:
+        cols = st.columns(len(config.CATEGORIES))
+        for col, cat in zip(cols, config.CATEGORIES):
+            sub = valid[valid["category"] == cat]
+            col.metric(
+                config.CATEGORY_LABELS[cat],
+                f"{sub['return_pct'].mean() * 100:+.1f}%" if not sub.empty else "—",
+                help=f"Average return across {len(sub)} logged picks",
+            )
+
+    view = perf.sort_values(["date", "category", "rank"],
+                            ascending=[False, True, True])
+    table = pd.DataFrame({
+        "Date": view["date"],
+        "Category": view["category"].map(config.CATEGORY_LABELS),
+        "Rank": view["rank"],
+        "Ticker": view["ticker"],
+        "Name": view["name"],
+        "Score": view["score"],
+        "Price @ pick": [f"${p:,.2f}" if pd.notna(p) else "—" for p in view["price"]],
+        "Price now": [f"${p:,.2f}" if pd.notna(p) else "—"
+                      for p in view["current_price"]],
+        "Return": [f"{r * 100:+.1f}%" if pd.notna(r) else "—"
+                   for r in view["return_pct"]],
+        "Days": view["days_held"],
+    })
+    st.dataframe(table, hide_index=True, width="stretch",
+                 height=min(560, 56 + 35 * len(table)))
+
+
+# --------------------------------------------------------------------------- #
+# Ticker lookup
+# --------------------------------------------------------------------------- #
+@st.cache_data(show_spinner=False, ttl=3600)
+def _lookup_metrics_cached(ticker: str):
+    try:
+        return metrics_mod.metrics_for(ticker)
+    except Exception:
+        return None
+
+
+def render_lookup(results: dict[str, pd.DataFrame]):
+    """Look up any ticker: key metrics, gate pass/fail per category, and its
+    rank in any bucket it surfaced in. Works even for names outside the
+    snapshot universe (fetched on demand, cached)."""
+    raw = st.text_input(
+        "🔎 Look up any ticker",
+        placeholder="e.g. AAPL, ASTS, JOBY — see why it does (or doesn't) qualify",
+        key="lookup_ticker",
+    )
+    ticker = raw.strip().upper()
+    if not ticker:
+        return
+
+    with st.spinner(f"Fetching {ticker}…"):
+        m = _lookup_metrics_cached(ticker)
+    if not m or m.get("price") is None:
+        st.error(f"Couldn't fetch **{ticker}** — check the symbol and try again.")
+        return
+
+    with st.container(border=True):
+        st.markdown(f"### {ticker} — {m.get('name') or '—'}")
+        st.caption(f"{m.get('sector') or '—'}  ·  {m.get('industry') or '—'}")
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Price", f"${m['price']:,.2f}")
+        c2.metric("Market cap", _fmt_b(m.get("market_cap")))
+        c3.metric("Rev growth YoY", _fmt_pct(m.get("revenue_growth")))
+        c4.metric("Analyst upside", _fmt_pct(m.get("analyst_upside")))
+        rsi = m.get("rsi")
+        c5.metric("RSI(14)", f"{rsi:.0f}" if rsi is not None else "—")
+
+        # Where it ranks right now (if it surfaced in any bucket).
+        placements = []
+        for cat, ranked in results.items():
+            if ranked is not None and not ranked.empty and ticker in ranked.index:
+                rank = ranked.index.get_loc(ticker) + 1
+                row = ranked.loc[ticker]
+                placements.append(
+                    f"**{config.CATEGORY_LABELS[cat]}** — rank #{rank} of "
+                    f"{len(ranked)}, score {row['score']:.0f}/100")
+        if placements:
+            st.markdown("  \n".join(placements))
+
+        # Gate pass/fail per category, with the reasons it misses.
+        st.markdown("**Category eligibility**")
+        report = scoring.gate_report(m)
+        cols = st.columns(len(config.CATEGORIES))
+        for col, cat in zip(cols, config.CATEGORIES):
+            fails = report[cat]
+            with col:
+                if not fails:
+                    st.markdown(f"✅ {config.CATEGORY_LABELS[cat]}")
+                else:
+                    st.markdown(f"❌ {config.CATEGORY_LABELS[cat]}")
+                    for f in fails:
+                        st.caption(f"· {f}")
+        if not placements and any(not f for f in report.values()):
+            st.caption(
+                "Passes at least one gate but isn't in the current snapshot "
+                "universe — refresh data to rank it against comparables.")
+
+        payload = fetch.peek_cache(ticker)
+        hist = (payload or {}).get("history", {})
+        dates, closes = hist.get("dates", []), hist.get("close", [])
+        if dates and closes:
+            chart_df = pd.DataFrame({"Close": closes}, index=pd.to_datetime(dates))
+            st.line_chart(chart_df, height=200)
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 def main():
     df, meta = _load_snapshot_cached(_snapshot_token())
-    controls = sidebar(meta)
+    sector_options = (
+        sorted(df["sector"].dropna().astype(str).unique())
+        if df is not None and not df.empty and "sector" in df.columns else []
+    )
+    controls = sidebar(meta, sector_options)
 
     st.title("StockSeeker")
     st.warning(config.DISCLAIMER)
@@ -385,21 +546,26 @@ def main():
         return
 
     filtered = _apply_filters(df, controls)
-    render_movers(filtered)
     results = scoring.screen(refresh.metrics_records(filtered), controls["weights"])
+    render_lookup(results)
+    render_movers(filtered)
 
-    tabs = st.tabs([config.CATEGORY_LABELS[c] for c in config.CATEGORIES])
+    tab_labels = [config.CATEGORY_LABELS[c] for c in config.CATEGORIES]
+    tab_labels.append("📜 Performance")
+    tabs = st.tabs(tab_labels)
     blurbs = {
         "growth": "Small/mid-caps growing fast at a reasonable price — caught "
                   "*before* they get expensive. Momentum reward is capped so we "
                   "favour names on the way up, not at the peak.",
-        "value": "Quality companies that fell hard and now trade at a discount "
-                 "to their own recent range, with a value-trap guard.",
+        "value": "Quality companies that fell hard and now trade cheap on real "
+                 "multiples (P/E, EV/EBITDA, P/S) versus sector peers, with a "
+                 "value-trap guard.",
         "compounder": "Large, profitable, lower-beta names for buy-and-hold / "
                       "dollar-cost-averaging.",
         "dip": "Names that just dropped hard or look oversold (shock + oversold "
                "blend), shown *with their risk flags* so you can judge an "
-               "overreaction from a broken thesis. Not gated on profitability.",
+               "overreaction from a broken thesis. Not gated on profitability, "
+               "but fundamentally healthier names get a small ranking edge.",
         "moonshot": "Low-priced (≤ $30/share), small/mid-cap speculative names "
                     "with big analyst upside and/or fast growth — the "
                     "lottery-ticket profile (think ACHR/JOBY), ranked by upside + "
@@ -409,6 +575,8 @@ def main():
         with tab:
             st.caption(blurbs[cat])
             render_table(results[cat], cat)
+    with tabs[-1]:
+        render_performance(df)
 
 
 if __name__ == "__main__":

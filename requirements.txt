@@ -19,3 +19,6 @@ vaderSentiment>=3.3
 # Config + snapshot persistence (file caching, not a database)
 python-dotenv>=1.0
 pyarrow>=16.0
+
+# Tests (python -m pytest tests/ -q)
+pytest>=8.0

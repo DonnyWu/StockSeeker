@@ -43,17 +43,28 @@ def _pct_change(series: list, lookback: int) -> Optional[float]:
 
 
 def _rsi(series: list, period: int = 14) -> Optional[float]:
-    """Classic Wilder-style RSI on the last ``period`` daily changes (0-100)."""
+    """Wilder's RSI (0-100), smoothed over the full available history.
+
+    Seeds the average gain/loss with a simple mean of the first ``period``
+    changes, then applies Wilder's recursive smoothing
+    ``avg = (avg * (period - 1) + current) / period`` for every later bar.
+    Far more stable than ranking only the last 14 diffs, which could flip a
+    name in/out of "oversold" on a single noisy day.
+    """
     closes = [c for c in series if c is not None]
     if len(closes) < period + 1:
         return None
     diffs = np.diff(np.asarray(closes, dtype=float))
-    recent = diffs[-period:]
-    gains = recent[recent > 0].sum()
-    losses = -recent[recent < 0].sum()
-    if losses == 0:
+    gains = np.where(diffs > 0, diffs, 0.0)
+    losses = np.where(diffs < 0, -diffs, 0.0)
+    avg_gain = float(gains[:period].mean())
+    avg_loss = float(losses[:period].mean())
+    for g, l in zip(gains[period:], losses[period:]):
+        avg_gain = (avg_gain * (period - 1) + g) / period
+        avg_loss = (avg_loss * (period - 1) + l) / period
+    if avg_loss == 0:
         return 100.0
-    rs = (gains / period) / (losses / period)
+    rs = avg_gain / avg_loss
     return float(100.0 - 100.0 / (1.0 + rs))
 
 
@@ -200,7 +211,9 @@ def compute_metrics(payload: dict) -> dict:
     if len(clean) >= 21:
         arr = np.asarray(clean, dtype=float)
         rets = arr[1:] / arr[:-1] - 1.0
-        vol = float(np.std(rets[-252:]))
+        # Volatility excludes the latest return: a one-day shock should be
+        # measured against the stock's *prior* noise, not inflate its own sigma.
+        vol = float(np.std(rets[:-1][-252:]))
         m["daily_vol"] = vol if vol > 0 else None
         m["drop_sigma"] = (
             m["ret_1d"] / vol if (m["ret_1d"] is not None and vol > 0) else None

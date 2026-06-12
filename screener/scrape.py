@@ -64,7 +64,7 @@ def get_finviz_snapshot(ticker: str) -> Optional[dict]:
     """
     url = f"https://finviz.com/quote.ashx?t={ticker.upper()}"
     try:
-        resp = _session().get(url, headers=_HEADERS, timeout=12)
+        resp = _session().get(url, headers=_HEADERS, timeout=config.SCRAPE_TIMEOUT_SECONDS)
         if resp.status_code != 200:
             return None
         from bs4 import BeautifulSoup
@@ -96,7 +96,7 @@ def get_finnhub_recommendation(ticker: str) -> Optional[dict]:
         resp = _session().get(
             url,
             params={"symbol": ticker.upper(), "token": config.FINNHUB_API_KEY},
-            timeout=12,
+            timeout=config.SCRAPE_TIMEOUT_SECONDS,
         )
         if resp.status_code != 200:
             return None
@@ -128,7 +128,7 @@ def get_fmp_score(ticker: str) -> Optional[dict]:
         resp = _session().get(
             url,
             params={"symbol": ticker.upper(), "apikey": config.FMP_API_KEY},
-            timeout=12,
+            timeout=config.SCRAPE_TIMEOUT_SECONDS,
         )
         if resp.status_code != 200:
             return None

@@ -23,7 +23,7 @@ from typing import Callable, Optional
 import pandas as pd
 
 import config
-from screener import fetch, metrics as metrics_mod, universe
+from screener import fetch, history, metrics as metrics_mod, scoring, universe
 
 
 def compute_snapshot(
@@ -119,6 +119,16 @@ def metrics_records(df: pd.DataFrame) -> list[dict]:
     return df.to_dict("records") if df is not None and not df.empty else []
 
 
+def record_default_picks(df: pd.DataFrame) -> None:
+    """Score the fresh snapshot with the *default* weights and log the top
+    picks to the history CSV (best effort — never blocks a refresh)."""
+    try:
+        results = scoring.screen(metrics_records(df))
+        history.record_picks(results)
+    except Exception as exc:
+        print(f"[refresh] failed to record pick history: {exc}")
+
+
 def _main():
     import argparse
 
@@ -148,6 +158,7 @@ def _main():
         progress=_progress,
     )
     meta = save_snapshot(df)
+    record_default_picks(df)
     elapsed = time.time() - start
     print(f"Saved {meta['n_tickers']} tickers to {config.SNAPSHOT_PARQUET}")
     print(f"Done in {elapsed:.0f}s")

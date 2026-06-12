@@ -39,28 +39,80 @@ def _pct(series: pd.Series, direction: str) -> pd.Series:
     """
     s = pd.to_numeric(series, errors="coerce")
     if direction == "score":
-        return s.clip(0, 100).fillna(50.0)
+        return s.clip(0, 100).fillna(config.NEUTRAL_SCORE)
     if s.notna().sum() < 2:
         # Not enough comparables to rank meaningfully.
-        return pd.Series(50.0, index=series.index)
+        return pd.Series(config.NEUTRAL_SCORE, index=series.index)
     ranks = s.rank(pct=True) * 100.0
     if direction == "low":
         ranks = 100.0 - ranks
-    return ranks.fillna(50.0)
+    return ranks.fillna(config.NEUTRAL_SCORE)
+
+
+def _pct_sector(df: pd.DataFrame, series: pd.Series, direction: str) -> pd.Series:
+    """Percentile rank against sector peers, blended with the universe rank.
+
+    Margins, ROE, leverage and valuation multiples mean different things in
+    different industries (software always "wins" gross margin universe-wide;
+    banks always "lose" debt/equity), so sector-sensitive factors are ranked
+    within their sector and blended 50/50 with the universe-wide rank to damp
+    small-group artifacts. Sectors with fewer than ``MIN_SECTOR_PEERS`` known
+    values fall back to the universe rank. Disabled via ``SECTOR_RELATIVE``.
+    """
+    universe = _pct(series, direction)
+    if not config.SECTOR_RELATIVE or "sector" not in df.columns:
+        return universe
+    s = pd.to_numeric(series, errors="coerce")
+    sectors = df["sector"].fillna("Unknown").astype(str)
+    out = universe.copy()
+    for _, idx in s.groupby(sectors).groups.items():
+        if s.loc[idx].notna().sum() >= config.MIN_SECTOR_PEERS:
+            sector_rank = _pct(s.loc[idx], direction)
+            out.loc[idx] = 0.5 * sector_rank + 0.5 * universe.loc[idx]
+    return out
+
+
+def _mean_of_available(parts: list[tuple[pd.Series, pd.Series]],
+                       index: pd.Index) -> tuple[pd.Series, pd.Series]:
+    """Average (score, available-mask) pairs over the *known* components only.
+
+    Returns (mean, n_known); rows with no known component are NaN in the mean.
+    Unlike filling missing components with a neutral 50, this stops sparse data
+    from dragging a well-covered name toward the middle — coverage rules are
+    applied by the callers instead.
+    """
+    total = pd.Series(0.0, index=index)
+    known = pd.Series(0, index=index)
+    for score, avail in parts:
+        total = total + score.where(avail, 0.0)
+        known = known + avail.astype(int)
+    return total / known.replace(0, np.nan), known
 
 
 def _quality_subscore(df: pd.DataFrame) -> pd.Series:
-    """Composite 0-100 quality score: ROE, margin, low debt, positive FCF."""
-    parts = [
-        _pct(df["roe"], "high"),
-        _pct(df["profit_margin"], "high"),
-        _pct(df["debt_to_equity"], "low"),
-    ]
+    """Composite 0-100 quality score: ROE, margin, low debt, positive FCF.
+
+    Sector-relative where it matters, and averaged over the components actually
+    known per name; names with fewer than ``QUALITY_MIN_KNOWN`` known inputs get
+    a flat neutral score so sparse data can't masquerade as quality.
+    """
+    roe = pd.to_numeric(df["roe"], errors="coerce")
+    margin = pd.to_numeric(df["profit_margin"], errors="coerce")
+    de = pd.to_numeric(df["debt_to_equity"], errors="coerce")
     fcf = pd.to_numeric(df["free_cash_flow"], errors="coerce")
-    fcf_score = pd.Series(np.where(fcf > 0, 100.0, 20.0), index=df.index)
-    fcf_score = fcf_score.where(fcf.notna(), 50.0)
-    parts.append(fcf_score)
-    return sum(parts) / len(parts)
+    fcf_score = pd.Series(
+        np.where(fcf > 0, config.FCF_POSITIVE_SCORE, config.FCF_NEGATIVE_SCORE),
+        index=df.index,
+    )
+    parts = [
+        (_pct_sector(df, roe, "high"), roe.notna()),
+        (_pct_sector(df, margin, "high"), margin.notna()),
+        (_pct_sector(df, de, "low"), de.notna()),
+        (fcf_score, fcf.notna()),
+    ]
+    mean, known = _mean_of_available(parts, df.index)
+    mean = mean.where(known >= config.QUALITY_MIN_KNOWN, config.NEUTRAL_SCORE)
+    return mean.fillna(config.NEUTRAL_SCORE)
 
 
 def _momentum_with_rsi_damping(df: pd.DataFrame) -> pd.Series:
@@ -118,6 +170,33 @@ def _value_vs_growth(df: pd.DataFrame) -> pd.Series:
     return _pct(raw, "high")
 
 
+def _valuation_multiples(df: pd.DataFrame) -> pd.Series:
+    """Cheapness on real multiples: P/E (forward fallback), EV/EBITDA, P/S.
+
+    Each multiple is ranked low-is-better against sector peers; non-positive
+    P/E and EV/EBITDA are treated as missing (negative earnings are not
+    "cheap"). Averages whatever components a name actually has. Replaces the
+    old 52-week range position, which mostly re-measured the drawdown factor
+    and never looked at an actual multiple.
+    """
+    pe = pd.to_numeric(df["pe_trailing"], errors="coerce")
+    pe = pe.fillna(pd.to_numeric(df["pe_forward"], errors="coerce"))
+    pe = pe.where(pe > 0)
+    ev = pd.to_numeric(df["ev_ebitda"], errors="coerce")
+    ev = ev.where(ev > 0)
+    ps = pd.to_numeric(df["ps_ratio"], errors="coerce")
+    ps = ps.where(ps > 0)
+    parts = [(_pct_sector(df, s, "low"), s.notna()) for s in (pe, ev, ps)]
+    mean, _ = _mean_of_available(parts, df.index)
+    return mean.fillna(config.NEUTRAL_SCORE)
+
+
+def _reasonable_valuation(df: pd.DataFrame) -> pd.Series:
+    """Compounder: forward P/E vs sector peers (non-positive treated missing)."""
+    pe = pd.to_numeric(df["pe_forward"], errors="coerce")
+    return _pct_sector(df, pe.where(pe > 0), "low")
+
+
 def _dividend_quality(df: pd.DataFrame) -> pd.Series:
     """Dividend yield, sustainability-aware, weighted down when there is none."""
     dy = pd.to_numeric(df["dividend_yield"], errors="coerce")
@@ -125,9 +204,11 @@ def _dividend_quality(df: pd.DataFrame) -> pd.Series:
     base = _pct(dy, "high")
     # No / negligible dividend -> a low (not zero) score, since a compounder can
     # still compound via buybacks; we just don't reward it on this factor.
-    base = base.where(dy.fillna(0) > 0.001, 20.0)
-    # Penalize unsustainable payout ratios (>80%).
-    base = base.where(~(payout > 0.80), base * 0.6)
+    base = base.where(dy.fillna(0) > config.DIVIDEND_YIELD_FLOOR,
+                      config.NO_DIVIDEND_SCORE)
+    # Penalize unsustainable payout ratios.
+    base = base.where(~(payout > config.PAYOUT_UNSUSTAINABLE),
+                      base * config.PAYOUT_PENALTY_MULT)
     return base
 
 
@@ -187,22 +268,23 @@ def _factor_specs():
         "growth": {
             "revenue_growth": (lambda d: d["revenue_growth"], "high"),
             "revenue_cagr": (lambda d: d["revenue_cagr"], "high"),
-            "gross_margin": (lambda d: d["gross_margin"], "high"),
+            "gross_margin": (
+                lambda d: _pct_sector(d, d["gross_margin"], "high"), "score"),
             "value_vs_growth": (_value_vs_growth, "score"),
             "analyst_upside": (lambda d: d["analyst_upside"], "high"),
             "relative_strength": (_momentum_with_rsi_damping, "score"),
-            "revisions_insider": (lambda d: d["earnings_growth"], "high"),
+            "earnings_momentum": (lambda d: d["earnings_growth"], "high"),
         },
         "value": {
             "drawdown": (_drawdown_quality, "score"),
-            "valuation_vs_history": (lambda d: d["range_position"], "low"),
+            "valuation_vs_history": (_valuation_multiples, "score"),
             "quality": (_quality_subscore, "score"),
             "fundamental_stability": (lambda d: d["revenue_growth"], "high"),
             "analyst_upside": (lambda d: d["analyst_upside"], "high"),
         },
         "compounder": {
             "quality_consistency": (_quality_subscore, "score"),
-            "reasonable_valuation": (lambda d: d["pe_forward"], "low"),
+            "reasonable_valuation": (_reasonable_valuation, "score"),
             "durable_growth": (lambda d: d["revenue_cagr"], "high"),
             "dividend_quality": (_dividend_quality, "score"),
             "low_volatility": (lambda d: d["beta"], "low"),
@@ -214,6 +296,7 @@ def _factor_specs():
             "oversold_rsi": (lambda d: d["rsi"], "low"),
             "below_trend": (_below_trend_subscore, "score"),
             "analyst_upside": (lambda d: d["analyst_upside"], "high"),
+            "fundamental_health": (_quality_subscore, "score"),
         },
         "moonshot": {
             "analyst_upside": (lambda d: d["analyst_upside"], "high"),
@@ -334,16 +417,157 @@ _GATES = {
 }
 
 
+def gate_report(metrics: dict) -> dict[str, list[str]]:
+    """Explain which eligibility conditions a single name fails, per category.
+
+    Returns ``{category: [human-readable failure, ...]}`` — an empty list means
+    the name clears that category's gate. Mirrors the vectorized ``_GATES``
+    logic including its missing-data behavior: a required-but-unknown metric
+    fails (with a "unknown" message), while "only exclude when known" checks
+    (value debt, compounder beta) pass when the metric is missing.
+    """
+    def v(key):
+        x = metrics.get(key)
+        try:
+            x = float(x)
+        except (TypeError, ValueError):
+            return None
+        return x if np.isfinite(x) else None
+
+    mc, price, adv = v("market_cap"), v("price"), v("avg_dollar_volume")
+    report: dict[str, list[str]] = {c: [] for c in config.CATEGORIES}
+
+    def need(category, ok, msg_fail, msg_unknown=None):
+        if ok is None:
+            report[category].append(msg_unknown or msg_fail)
+        elif not ok:
+            report[category].append(msg_fail)
+
+    def _known(x, cond):
+        return None if x is None else cond
+
+    # --- growth ---
+    g = config.GATE_GROWTH
+    rg = v("revenue_growth")
+    need("growth",
+         _known(mc, mc is not None and g["market_cap_min"] <= mc <= g["market_cap_max"]),
+         f"market cap {_fmt_cap(mc) if mc else ''} outside "
+         f"{_fmt_cap(g['market_cap_min'])}–{_fmt_cap(g['market_cap_max'])}",
+         "market cap unknown")
+    need("growth", _known(price, price is not None and price >= g["price_min"]),
+         f"price below ${g['price_min']:.0f}", "price unknown")
+    need("growth", _known(rg, rg is not None and rg > g["min_revenue_growth"]),
+         f"revenue not growing ({rg * 100:+.0f}% YoY)" if rg is not None
+         else "revenue growth unknown", "revenue growth unknown")
+    need("growth", _known(adv, adv is not None and adv >= g["min_avg_dollar_volume"]),
+         f"avg dollar volume below {_fmt_cap(g['min_avg_dollar_volume'])}/day",
+         "avg dollar volume unknown")
+
+    # --- value ---
+    g = config.GATE_VALUE
+    off, de = v("off_high"), v("debt_to_equity")
+    profitable = bool(metrics.get("profitable"))
+    need("value", _known(mc, mc is not None and mc >= g["market_cap_min"]),
+         f"market cap below {_fmt_cap(g['market_cap_min'])}", "market cap unknown")
+    need("value", _known(price, price is not None and price >= g["price_min"]),
+         f"price below ${g['price_min']:.0f}", "price unknown")
+    if off is None:
+        report["value"].append("distance from 52-wk high unknown")
+    elif off < g["min_off_high"]:
+        report["value"].append(
+            f"only {off * 100:.0f}% below 52-wk high (needs ≥ {g['min_off_high'] * 100:.0f}%)")
+    elif off > g["max_off_high"]:
+        report["value"].append(
+            f"{off * 100:.0f}% below 52-wk high — beyond the "
+            f"{g['max_off_high'] * 100:.0f}% broken-thesis cap")
+    if not profitable:
+        report["value"].append("not profitable")
+    if de is not None and de > g["max_debt_to_equity"]:
+        report["value"].append(
+            f"debt/equity {de:.1f} above {g['max_debt_to_equity']:.1f}")
+
+    # --- compounder ---
+    g = config.GATE_COMPOUNDER
+    beta = v("beta")
+    need("compounder", _known(mc, mc is not None and mc >= g["market_cap_min"]),
+         f"market cap below {_fmt_cap(g['market_cap_min'])}", "market cap unknown")
+    need("compounder", _known(price, price is not None and price >= g["price_min"]),
+         f"price below ${g['price_min']:.0f}", "price unknown")
+    if not profitable:
+        report["compounder"].append("not profitable")
+    if beta is not None and beta > g["max_beta"]:
+        report["compounder"].append(f"beta {beta:.2f} above {g['max_beta']:.1f}")
+
+    # --- dip ---
+    g = config.GATE_DIP
+    sigma, r1w, r2w, rsi = v("drop_sigma"), v("ret_1w"), v("ret_2w"), v("rsi")
+    need("dip", _known(mc, mc is not None and mc >= g["market_cap_min"]),
+         f"market cap below {_fmt_cap(g['market_cap_min'])}", "market cap unknown")
+    need("dip", _known(price, price is not None and price >= g["price_min"]),
+         f"price below ${g['price_min']:.0f}", "price unknown")
+    need("dip", _known(adv, adv is not None and adv >= g["min_avg_dollar_volume"]),
+         f"avg dollar volume below {_fmt_cap(g['min_avg_dollar_volume'])}/day",
+         "avg dollar volume unknown")
+    dipping = (
+        (sigma is not None and sigma <= g["shock_sigma"])
+        or (r1w is not None and r1w <= g["short_drop"])
+        or (r2w is not None and r2w <= g["short_drop"])
+        or (rsi is not None and rsi <= g["oversold_rsi"])
+    )
+    if not dipping:
+        report["dip"].append(
+            f"no dip signal (needs a {abs(g['shock_sigma']):.0f}σ down day, "
+            f"{g['short_drop'] * 100:.0f}% over 1–2 weeks, or RSI ≤ "
+            f"{g['oversold_rsi']:.0f})")
+
+    # --- moonshot ---
+    g = config.GATE_MOONSHOT
+    upside, n_an = v("analyst_upside"), v("num_analysts")
+    need("moonshot",
+         _known(mc, mc is not None and g["market_cap_min"] <= mc <= g["market_cap_max"]),
+         f"market cap {_fmt_cap(mc) if mc else ''} outside "
+         f"{_fmt_cap(g['market_cap_min'])}–{_fmt_cap(g['market_cap_max'])}",
+         "market cap unknown")
+    need("moonshot", _known(price, price is not None and price <= g["price_max"]),
+         f"price above ${g['price_max']:.0f}", "price unknown")
+    need("moonshot", _known(adv, adv is not None and adv >= g["min_avg_dollar_volume"]),
+         f"avg dollar volume below {_fmt_cap(g['min_avg_dollar_volume'])}/day",
+         "avg dollar volume unknown")
+    potential = (
+        (upside is not None and n_an is not None
+         and upside >= g["upside_min"] and n_an >= g["min_analysts"])
+        or (v("revenue_growth") is not None
+            and v("revenue_growth") >= g["revenue_growth_min"])
+    )
+    if not potential:
+        report["moonshot"].append(
+            f"no potential signal (needs analyst upside ≥ "
+            f"+{g['upside_min'] * 100:.0f}% with ≥ {g['min_analysts']:.0f} analysts, "
+            f"or revenue growth ≥ +{g['revenue_growth_min'] * 100:.0f}% YoY)")
+
+    return report
+
+
 # --------------------------------------------------------------------------- #
 # Penalties (value-trap guard etc.)
 # --------------------------------------------------------------------------- #
 def _value_trap_multiplier(df: pd.DataFrame) -> pd.Series:
-    """Heavy penalty when both fundamentals are shrinking AND analysts cut."""
+    """Graduated value-trap penalty.
+
+    Revenue AND earnings both shrinking already hurts; shrinking fundamentals
+    *plus* a bearish analyst consensus hurts badly. Graduated so a name doesn't
+    jump half its score on a single analyst-revision tick.
+    """
     rg = pd.to_numeric(df["revenue_growth"], errors="coerce")
     eg = pd.to_numeric(df["earnings_growth"], errors="coerce")
     rec = pd.to_numeric(df["recommendation_mean"], errors="coerce")
-    trap = (rg < 0) & (eg < 0) & (rec > 3.2)
-    return pd.Series(np.where(trap.fillna(False), 0.5, 1.0), index=df.index)
+    shrinking = ((rg < 0) & (eg < 0)).fillna(False)
+    bearish = (rec > config.VALUE_TRAP_REC_MEAN).fillna(False)
+    mult = np.where(
+        shrinking & bearish, config.VALUE_TRAP_FULL_MULT,
+        np.where(shrinking, config.VALUE_TRAP_SHRINKING_MULT, 1.0),
+    )
+    return pd.Series(mult, index=df.index)
 
 
 # --------------------------------------------------------------------------- #
@@ -520,7 +744,7 @@ def screen(
     metrics_list: list[dict],
     weights: Optional[dict] = None,
 ) -> dict[str, pd.DataFrame]:
-    """Run all three category screens.
+    """Run every category screen.
 
     ``weights`` is an optional {category: {factor: weight}} override (e.g. from
     the UI sliders); falls back to :data:`config.DEFAULT_WEIGHTS`.
