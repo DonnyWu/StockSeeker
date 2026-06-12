@@ -69,6 +69,8 @@ FETCH_THROTTLE_SECONDS = 0.4
 FETCH_MAX_WORKERS = 6
 # Cap how many of the top candidates get expensive enrichment (FMP/Finnhub/scrape).
 ENRICH_TOP_N = 25
+# HTTP timeout for the enrichment scraping/API calls.
+SCRAPE_TIMEOUT_SECONDS = 12
 
 
 # --------------------------------------------------------------------------- #
@@ -153,7 +155,7 @@ WEIGHTS_GROWTH = {
     "value_vs_growth": 0.15,   # low P/S relative to growth (PSG-style)
     "analyst_upside": 0.15,
     "relative_strength": 0.10,  # 6-12mo momentum, capped when overbought
-    "revisions_insider": 0.05,
+    "earnings_momentum": 0.05,
 }
 
 WEIGHTS_VALUE = {
@@ -174,11 +176,12 @@ WEIGHTS_COMPOUNDER = {
 }
 
 WEIGHTS_DIP = {
-    "shock": 0.30,             # size of the recent sigma down-move
-    "short_drawdown": 0.25,    # 1-2 week decline
+    "shock": 0.25,             # size of the recent sigma down-move
+    "short_drawdown": 0.20,    # 1-2 week decline
     "oversold_rsi": 0.20,      # low RSI
     "below_trend": 0.15,       # distance below the 200d MA (capped)
     "analyst_upside": 0.10,    # tilt toward overreactions vs. broken theses
+    "fundamental_health": 0.10,  # quality dips rank above junk dips at equal drop
 }
 
 WEIGHTS_MOONSHOT = {
@@ -210,6 +213,30 @@ MIN_ELIGIBLE_FOR_PERCENTILE = 5  # below this, fall back to absolute thresholds
 DIP_DEEP_DROP = 0.60         # dip: below-trend distance is capped here so a total collapse doesn't dominate
 MOVERS_SIGMA = -2.0          # "Big movers" strip: surface drops at/below this many sigmas
 MOVERS_TOP_N = 8             # how many movers to show in the top-of-page strip
+
+NEUTRAL_SCORE = 50.0         # "factor unavailable" score on the 0-100 scale
+
+# Sector-relative ranking: rank sector-sensitive factors (margins, ROE, debt,
+# valuation multiples) against sector peers instead of the whole universe, so
+# software isn't auto-rewarded on gross margin nor banks auto-punished on D/E.
+SECTOR_RELATIVE = True
+MIN_SECTOR_PEERS = 5         # sectors with fewer eligible names fall back to universe rank
+
+# Quality subscore (ROE / margin / D-E / FCF) tuning.
+QUALITY_MIN_KNOWN = 2        # need at least this many known components, else neutral
+FCF_POSITIVE_SCORE = 100.0   # positive free cash flow bucket score
+FCF_NEGATIVE_SCORE = 20.0    # negative free cash flow bucket score
+
+# Dividend-quality factor tuning.
+DIVIDEND_YIELD_FLOOR = 0.001   # below this the name is treated as a non-payer
+NO_DIVIDEND_SCORE = 20.0       # non-payers get a low (not zero) dividend score
+PAYOUT_UNSUSTAINABLE = 0.80    # payout ratios above this are penalized
+PAYOUT_PENALTY_MULT = 0.6      # ... by this multiplier
+
+# Value-trap guard (graduated, applied to the final value score).
+VALUE_TRAP_REC_MEAN = 3.2          # analyst rec mean worse than this = bearish
+VALUE_TRAP_SHRINKING_MULT = 0.75   # revenue AND earnings both shrinking
+VALUE_TRAP_FULL_MULT = 0.5         # ... and analysts bearish too
 
 CATEGORIES = ("growth", "value", "compounder", "dip", "moonshot")
 CATEGORY_LABELS = {
